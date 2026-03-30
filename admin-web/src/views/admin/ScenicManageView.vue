@@ -2,6 +2,7 @@
 import { onMounted, reactive, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import AdminShell from '../../components/AdminShell.vue';
+import { postScenicCopywritingApi } from '../../api/ai';
 import {
   createScenicApi,
   deleteScenicApi,
@@ -15,6 +16,8 @@ import { getToken } from '../../utils/auth';
 const loading = ref(false);
 const dialogVisible = ref(false);
 const dialogMode = ref('create');
+const aiGenerating = ref(false);
+const aiModelName = ref('');
 const formRef = ref();
 const pagination = reactive({
   page: 1,
@@ -49,7 +52,8 @@ const form = reactive({
   tags: '',
   recommendFlag: 0,
   hotScore: 0,
-  status: 1
+  status: 1,
+  aiNotes: ''
 });
 
 const rules = {
@@ -77,8 +81,10 @@ function resetForm() {
     tags: '',
     recommendFlag: 0,
     hotScore: 0,
-    status: 1
+    status: 1,
+    aiNotes: ''
   });
+  aiModelName.value = '';
 }
 
 const uploadHeaders = {
@@ -116,6 +122,68 @@ function buildPayload() {
   };
 }
 
+function parseTagsForAi(value) {
+  return String(value || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, 8);
+}
+
+async function confirmOverwriteIfNeeded() {
+  if (!form.intro && !form.cultureDesc) {
+    return true;
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      'AI generated copy will overwrite the current intro and culture description. Continue?',
+      'Confirm',
+      { type: 'warning' }
+    );
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+async function handleGenerateCopywriting() {
+  const name = String(form.name || '').trim();
+
+  if (!name) {
+    ElMessage.warning('Please input scenic name first');
+    return;
+  }
+
+  const confirmed = await confirmOverwriteIfNeeded();
+
+  if (!confirmed) {
+    return;
+  }
+
+  aiGenerating.value = true;
+  aiModelName.value = '';
+
+  try {
+    const response = await postScenicCopywritingApi({
+      targetId: form.id || null,
+      name,
+      region: form.region,
+      tags: parseTagsForAi(form.tags),
+      notes: form.aiNotes
+    });
+
+    form.intro = response.data.intro || '';
+    form.cultureDesc = response.data.culture_desc || '';
+    aiModelName.value = response.data.model_name || '';
+    ElMessage.success('AI copy generated');
+  } catch (error) {
+    aiModelName.value = '';
+  } finally {
+    aiGenerating.value = false;
+  }
+}
+
 async function loadTable() {
   loading.value = true;
 
@@ -146,8 +214,10 @@ async function openEditDialog(row) {
   Object.assign(form, {
     ...response.data,
     galleryImages: (response.data.galleryImages || []).join(','),
-    tags: (response.data.tags || []).join(',')
+    tags: (response.data.tags || []).join(','),
+    aiNotes: ''
   });
+  aiModelName.value = '';
   dialogVisible.value = true;
 }
 
@@ -274,6 +344,24 @@ onMounted(loadTable);
         </el-form-item>
         <el-form-item label="Gallery Images">
           <el-input v-model="form.galleryImages" placeholder="comma separated image urls" />
+        </el-form-item>
+        <el-form-item label="AI Notes">
+          <div style="width: 100%;">
+            <el-input
+              v-model="form.aiNotes"
+              type="textarea"
+              rows="2"
+              maxlength="200"
+              show-word-limit
+              placeholder="Optional instruction for AI copy tone"
+            />
+            <div style="display: flex; align-items: center; gap: 12px; margin-top: 8px; flex-wrap: wrap;">
+              <el-button type="primary" plain :loading="aiGenerating" @click="handleGenerateCopywriting">
+                {{ aiGenerating ? 'Generating...' : 'AI Generate Copy' }}
+              </el-button>
+              <span v-if="aiModelName" style="color: #6b7280; font-size: 13px;">Model: {{ aiModelName }}</span>
+            </div>
+          </div>
         </el-form-item>
         <el-form-item label="Intro">
           <el-input v-model="form.intro" type="textarea" rows="3" />

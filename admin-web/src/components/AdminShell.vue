@@ -10,7 +10,8 @@ const menus = [
   { path: '/admin/dashboard', label: 'Dashboard' },
   { path: '/admin/scenic', label: 'Scenic' },
   { path: '/admin/article', label: 'Article' },
-  { path: '/admin/banner', label: 'Banner' }
+  { path: '/admin/banner', label: 'Banner' },
+  { path: '/admin/ai-logs', label: 'AI Logs' }
 ];
 
 const activePath = computed(() => route.path);

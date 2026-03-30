@@ -46,6 +46,14 @@ const routes = [
     meta: {
       title: 'Banner Management'
     }
+  },
+  {
+    path: '/admin/ai-logs',
+    name: 'admin-ai-logs',
+    component: () => import('../views/admin/AiLogsView.vue'),
+    meta: {
+      title: 'AI Logs'
+    }
   }
 ];
 
