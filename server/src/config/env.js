@@ -18,7 +18,7 @@ export const env = {
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || '7d',
   uploadDir: process.env.UPLOAD_DIR || 'src/uploads',
   uploadUrlPrefix: process.env.UPLOAD_URL_PREFIX || '/uploads',
-  aiBaseUrl: process.env.AI_BASE_URL || 'https://api.openai.com/v1',
+  aiBaseUrl: process.env.AI_BASE_URL || '',
   aiApiKey: process.env.AI_API_KEY || '',
-  aiModel: process.env.AI_MODEL || 'gpt-4o-mini'
+  aiModel: process.env.AI_MODEL || ''
 };

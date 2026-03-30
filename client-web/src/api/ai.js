@@ -9,3 +9,9 @@ export function postAiChatApi(data) {
     timeout: 30000
   });
 }
+
+export function postAiTripPlanApi(data) {
+  return request.post('/api/front/ai/trip-plan', data, {
+    timeout: 40000
+  });
+}

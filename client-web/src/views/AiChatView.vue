@@ -40,6 +40,7 @@ async function submitQuestion(customQuestion) {
     chatRecords.value.unshift({
       question: currentQuestion,
       answer: response.data.answer,
+      modelName: response.data.model_name || '',
       matchedContext: response.data.matchedContext || []
     });
     question.value = currentQuestion;
@@ -140,6 +141,7 @@ onMounted(loadRecommendQuestions);
 
             <div class="answer-card__answer">
               <span class="answer-card__label">回答</span>
+              <div v-if="item.modelName" class="answer-card__model">模型：{{ item.modelName }}</div>
               <div class="answer-card__content">{{ item.answer }}</div>
             </div>
 
@@ -251,6 +253,12 @@ onMounted(loadRecommendQuestions);
   line-height: 1.85;
   color: #374151;
   white-space: pre-line;
+}
+
+.answer-card__model {
+  margin-bottom: 10px;
+  color: #6b7280;
+  font-size: 13px;
 }
 
 .context-tags {

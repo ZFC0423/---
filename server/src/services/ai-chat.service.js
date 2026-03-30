@@ -274,6 +274,26 @@ function getClientIp(req) {
   return req.ip || req.socket?.remoteAddress || '';
 }
 
+function getAiConfigState() {
+  return {
+    baseUrl: env.aiBaseUrl || '',
+    model: env.aiModel || '',
+    hasApiKey: Boolean(env.aiApiKey)
+  };
+}
+
+function logAiInfo(message, extra = {}) {
+  console.info('[ai-chat]', message, extra);
+}
+
+function logAiWarn(message, extra = {}) {
+  console.warn('[ai-chat]', message, extra);
+}
+
+function logAiError(message, extra = {}) {
+  console.error('[ai-chat]', message, extra);
+}
+
 async function recallScenicItems(terms) {
   if (!terms.length) {
     return [];
@@ -375,8 +395,16 @@ async function recallMatchedContext(question) {
 async function requestChatCompletion(question, matchedContext) {
   const contextText = buildContextText(matchedContext);
   const messages = buildChatMessages({ question, contextText });
+  const aiConfig = getAiConfigState();
 
-  if (!env.aiBaseUrl || !env.aiApiKey || !env.aiModel) {
+  if (!aiConfig.baseUrl || !aiConfig.hasApiKey || !aiConfig.model) {
+    logAiWarn('remote model skipped because AI env is incomplete', {
+      baseUrl: aiConfig.baseUrl || '(empty)',
+      model: aiConfig.model || '(empty)',
+      hasApiKey: aiConfig.hasApiKey,
+      fallback: true
+    });
+
     return {
       answer: buildFallbackAnswer(question, matchedContext, '当前 AI 服务尚未完成配置，以下回答基于已检索到的资料整理。'),
       modelName: 'fallback-local',
@@ -385,10 +413,19 @@ async function requestChatCompletion(question, matchedContext) {
   }
 
   try {
+    const requestUrl = `${aiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`;
+
+    logAiInfo('calling remote model', {
+      baseUrl: aiConfig.baseUrl,
+      requestUrl,
+      model: aiConfig.model,
+      matchedCount: matchedContext.length
+    });
+
     const response = await axios.post(
-      `${env.aiBaseUrl.replace(/\/+$/, '')}/chat/completions`,
+      requestUrl,
       {
-        model: env.aiModel,
+        model: aiConfig.model,
         temperature: 0.4,
         messages
       },
@@ -407,13 +444,28 @@ async function requestChatCompletion(question, matchedContext) {
       throw new Error('模型返回内容为空');
     }
 
+    logAiInfo('remote model responded successfully', {
+      model: response.data?.model || aiConfig.model,
+      tokenUsage: getTokenUsage(response.data?.usage),
+      fallback: false
+    });
+
     return {
       answer,
-      modelName: response.data?.model || env.aiModel,
+      modelName: response.data?.model || aiConfig.model,
       tokenUsage: getTokenUsage(response.data?.usage)
     };
   } catch (error) {
     const reason = error.response?.data?.error?.message || error.message || '模型服务暂时不可用';
+    const upstreamStatus = error.response?.status || null;
+
+    logAiError('remote model request failed, switching to fallback-local', {
+      baseUrl: aiConfig.baseUrl,
+      model: aiConfig.model,
+      upstreamStatus,
+      message: reason,
+      fallback: true
+    });
 
     return {
       answer: buildFallbackAnswer(question, matchedContext, `模型调用未成功，已切换为资料整理模式。${reason}`),
@@ -458,6 +510,7 @@ export async function chatWithGanzhouAssistant(req) {
 
   return {
     answer: aiResult.answer,
+    model_name: aiResult.modelName,
     matchedContext: matchedContext.map((item) => ({
       type: item.type,
       id: item.id,
