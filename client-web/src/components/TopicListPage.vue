@@ -48,7 +48,7 @@ async function loadList() {
     listData.value = response.data.list;
     pagination.total = response.data.total;
   } catch (error) {
-    errorMessage.value = error.response?.data?.message || 'Failed to load topic content.';
+    errorMessage.value = error.response?.data?.message || '主题内容加载失败，请稍后重试。';
     ElMessage.error(errorMessage.value);
   } finally {
     loading.value = false;
@@ -84,12 +84,12 @@ onMounted(loadList);
 
       <el-card class="topic-search" shadow="never">
         <div class="topic-search__bar">
-          <el-input v-model="filters.keyword" placeholder="输入文章标题、摘要或标签进行寻迹..." clearable @keyup.enter="handleSearch">
+          <el-input v-model="filters.keyword" placeholder="输入关键词，筛选该主题下的文化线索..." clearable @keyup.enter="handleSearch">
             <template #prefix>
               <el-icon><Search /></el-icon>
             </template>
           </el-input>
-          <el-button type="primary" class="search-btn" @click="handleSearch">全网检索</el-button>
+          <el-button type="primary" class="search-btn" @click="handleSearch">筛选内容</el-button>
         </div>
       </el-card>
 
@@ -101,10 +101,14 @@ onMounted(loadList);
       <el-skeleton v-if="loading" :rows="8" animated />
 
       <template v-else>
-        <el-empty v-if="!listData.length" description="未能找到符合条件的文旅专题记录" />
+        <el-empty v-if="!listData.length" description="暂无符合该主题的相关文化线索" />
 
-        <div v-else class="card-grid">
-          <el-card v-for="item in listData" :key="item.id" class="topic-card" shadow="hover" @click="goDetail(item.id)">
+        <div v-else>
+          <div class="reading-guide-box">
+            <strong>浏览提示：</strong>本页按主题组织已有内容，为您提供清晰的探索入口。当前展示基于平台现有资料，部分原始条目保留了外文命名。
+          </div>
+          <div class="card-grid">
+            <el-card v-for="item in listData" :key="item.id" class="topic-card" shadow="hover" @click="goDetail(item.id)">
             <div class="topic-card__image-wrapper">
               <img
                 class="image-cover topic-card__image"
@@ -119,10 +123,11 @@ onMounted(loadList);
                 <span class="meta-view"><el-icon><View /></el-icon> {{ item.viewCount }}</span>
               </div>
               <h3 class="topic-card__title">{{ item.title }}</h3>
-              <p class="topic-card__summary">{{ item.summary || '暂无导读摘要。' }}</p>
+              <p class="topic-card__summary">{{ item.summary || '暂无核心线索说明。' }}</p>
               <div class="topic-card__tags" v-if="item.tags && item.tags.length">
                 <el-tag v-for="tag in item.tags" :key="tag" size="small" type="info" effect="plain">{{ tag }}</el-tag>
               </div>
+            </div>
             </div>
           </el-card>
         </div>
@@ -314,5 +319,20 @@ onMounted(loadList);
   .search-btn {
     width: 100%;
   }
+}
+
+.reading-guide-box {
+  background: var(--gz-bg-page, #f8fafc);
+  padding: 14px 20px;
+  border-radius: var(--gz-radius-md, 8px);
+  color: var(--gz-text-regular, #475569);
+  font-size: 14px;
+  line-height: 1.6;
+  margin-bottom: 24px;
+  border: 1px solid var(--gz-border-light, #e2e8f0);
+}
+
+.reading-guide-box strong {
+  color: var(--gz-brand-primary, #0f766e);
 }
 </style>

@@ -92,7 +92,7 @@ async function submitTripPlan() {
 
     result.value = response.data;
   } catch (error) {
-    errorMessage.value = error.response?.data?.message || '智能规划网络繁忙，请稍后再试';
+    errorMessage.value = error.response?.data?.message || '行程推荐服务暂时繁忙，请稍后再试';
     ElMessage.error(errorMessage.value);
   } finally {
     loading.value = false;
@@ -113,10 +113,10 @@ function formatContextType(value) {
     <div class="page-shell">
       <section class="trip-hero">
         <div class="trip-hero__content">
-          <div class="trip-hero__eyebrow">智能行程规划</div>
-          <h1 class="page-title">定制您的专属文旅之行</h1>
+          <div class="trip-hero__eyebrow">行程推荐</div>
+          <h1 class="page-title">赣州行程推荐</h1>
           <p class="page-subtitle">
-            描述您的期待，系统将从丰富的本地资源中为您量身打造一份独一无二的赣州探索指南。
+            根据出行天数、兴趣方向与节奏偏好，生成一份可参考的赣州游览建议。
           </p>
         </div>
       </section>
@@ -124,8 +124,8 @@ function formatContextType(value) {
       <el-card class="trip-form-card">
         <template #header>
           <div class="trip-form-card__header">
-            <span class="trip-form-title">行程偏好设置</span>
-            <span class="trip-form-card__tip">请根据您的实际需求调整</span>
+            <span class="trip-form-title">出行偏好</span>
+            <span class="trip-form-card__tip">填写您的基本出行信息</span>
           </div>
         </template>
 
@@ -151,7 +151,7 @@ function formatContextType(value) {
             </el-form-item>
           </div>
 
-          <el-form-item label="旅行焦点（可多选）">
+          <el-form-item label="兴趣方向（可多选）">
             <el-checkbox-group v-model="formState.interests" class="trip-checkbox-group">
               <el-checkbox
                 v-for="item in interestOptions"
@@ -164,7 +164,7 @@ function formatContextType(value) {
             </el-checkbox-group>
           </el-form-item>
 
-          <el-form-item label="想对我说点什么（选填）">
+          <el-form-item label="补充说明（选填）">
             <el-input
               v-model="formState.notes"
               type="textarea"
@@ -178,7 +178,7 @@ function formatContextType(value) {
 
         <div class="trip-form-actions">
           <el-button type="primary" size="large" :loading="loading" @click="submitTripPlan" class="submit-btn">
-            {{ loading ? '路线计算中...' : '生成定制行程' }}
+            {{ loading ? '正在生成建议...' : '获取行程建议' }}
           </el-button>
         </div>
       </el-card>
@@ -194,12 +194,12 @@ function formatContextType(value) {
 
       <section class="trip-result-section" v-if="loading || result">
         <div class="trip-result-header">
-          <h2 class="trip-result-title">为您定制的专属行程</h2>
+          <h2 class="trip-result-title">行程建议</h2>
         </div>
 
         <div v-if="loading" class="loading-state">
            <div class="loading-spinner"></div>
-           <p>正在为您编织美好的旅途...</p>
+           <p>正在根据偏好检索平台内容...</p>
         </div>
 
         <div v-else-if="result" class="trip-result">
@@ -207,7 +207,7 @@ function formatContextType(value) {
             <div class="trip-summary-card__meta">
               <el-tag effect="plain" round type="info" size="small">出行节奏：{{ paceLabelMap[formState.pace] }}</el-tag>
               <el-tag effect="plain" round type="info" size="small">交通：{{ transportLabelMap[formState.transport] }}</el-tag>
-              <el-tag effect="light" round size="small" class="model-tag">AI引擎：{{ result.model_name || '内部大脑' }}</el-tag>
+              <el-tag effect="light" round size="small" class="model-tag">生成模型：{{ result.model_name || '默认模型' }}</el-tag>
             </div>
             <div class="trip-summary-card__content">{{ result.summary }}</div>
           </el-card>
@@ -242,20 +242,20 @@ function formatContextType(value) {
                     </div>
                     <div class="trip-item__reason">{{ item.reason }}</div>
                     <div class="trip-item__tips">
-                      <strong>💡 私人小贴士：</strong>{{ item.tips }}
+                      <strong>💡 参考提示：</strong>{{ item.tips }}
                     </div>
                   </div>
                 </div>
               </div>
 
-              <el-empty v-else description="今日在此自由探索，享受片刻宁静" :image-size="70" />
+              <el-empty v-else description="当日暂无具体安排建议" :image-size="70" />
             </el-card>
           </div>
 
           <div class="trip-bottom-cards">
             <el-card class="trip-extra-card">
               <template #header>
-                <div class="trip-extra-card__title">🎒 行程备忘录</div>
+                <div class="trip-extra-card__title">🎒 出行提示</div>
               </template>
               <ul class="trip-tip-list">
                 <li v-for="(tip, index) in result.travelTips || []" :key="`${tip}-${index}`">
@@ -266,7 +266,7 @@ function formatContextType(value) {
 
             <el-card class="trip-extra-card">
               <template #header>
-                <div class="trip-extra-card__title">📚 引用资料集</div>
+                <div class="trip-extra-card__title">📚 参考来源</div>
               </template>
               <div v-if="result.matchedContext?.length" class="trip-context-tags">
                 <el-tag
@@ -278,7 +278,7 @@ function formatContextType(value) {
                   {{ formatContextType(context.type) }} · {{ context.title }}
                 </el-tag>
               </div>
-              <el-empty v-else description="无特定数据库参考" :image-size="50" />
+              <el-empty v-else description="暂无关联平台内容" :image-size="50" />
             </el-card>
           </div>
         </div>
