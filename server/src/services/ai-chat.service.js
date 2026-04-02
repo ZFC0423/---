@@ -68,6 +68,22 @@ function parseStringList(value) {
   }
 }
 
+function uniq(items) {
+  return Array.from(new Set(items.filter(Boolean)));
+}
+
+function sanitizeStringArray(value, maxItems = 4, maxLength = 64) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return uniq(
+    value
+      .map((item) => shortenText(item, maxLength))
+      .filter(Boolean)
+  ).slice(0, maxItems);
+}
+
 function extractSearchTerms(question) {
   const normalizedQuestion = normalizeText(question);
   const terms = new Set();
@@ -185,44 +201,27 @@ function buildContextText(matchedContext) {
   }).join('\n\n');
 }
 
-function buildFallbackAnswer(question, matchedContext, reason) {
-  if (!matchedContext.length) {
-    return [
-      '基于当前资料，我暂时没有检索到足够相关的赣州旅游文化内容。',
-      '你可以换个更具体的问法，例如“赣州周末适合去哪些景点”“赣州特色美食有哪些”或“赣州有哪些红色文化景点”。',
-      reason ? `说明：${reason}` : ''
-    ].filter(Boolean).join('\n');
+function extractJsonText(rawText) {
+  const normalized = normalizeText(rawText);
+
+  if (!normalized) {
+    return '';
   }
 
-  const scenicItems = matchedContext.filter((item) => item.type === 'scenic');
-  const articleItems = matchedContext.filter((item) => item.type === 'article');
-  const lines = ['基于当前资料，我先给你一个简要建议：'];
+  const fencedMatch = normalized.match(/```json\s*([\s\S]*?)```/i) || normalized.match(/```\s*([\s\S]*?)```/i);
 
-  if (scenicItems.length) {
-    lines.push(`可以优先关注这些景点：${scenicItems.map((item) => item.title).join('、')}。`);
+  if (fencedMatch?.[1]) {
+    return fencedMatch[1].trim();
   }
 
-  if (articleItems.length) {
-    lines.push(`如果你也想结合文化内容，可以再看看：${articleItems.map((item) => item.title).join('、')}。`);
+  const start = normalized.indexOf('{');
+  const end = normalized.lastIndexOf('}');
+
+  if (start !== -1 && end !== -1 && end > start) {
+    return normalized.slice(start, end + 1);
   }
 
-  if (/周末|一日|两日|玩|游/.test(question)) {
-    lines.push('如果是周末或短时间出行，建议优先安排交通方便、内容集中的景点，再搭配一到两个美食或文化点。');
-  } else if (/美食|吃/.test(question)) {
-    lines.push('如果你更关注吃的体验，可以先围绕本地经典菜和客家饮食文化来安排行程。');
-  } else if (/非遗|文化|戏曲|客家/.test(question)) {
-    lines.push('如果你更想了解文化面，可以优先看非遗、客家文化和老城历史相关内容。');
-  } else if (/红色|革命|长征/.test(question)) {
-    lines.push('如果你关注红色文化，建议把革命旧址和相关历史解说内容结合起来看，会更完整。');
-  }
-
-  lines.push('以上内容是基于当前资料整理的，如果你愿意，我还可以继续按“景点”“美食”“非遗”或“红色文化”中的某一类继续细化。');
-
-  if (reason) {
-    lines.push(`说明：${reason}`);
-  }
-
-  return lines.join('\n');
+  return normalized;
 }
 
 function extractMessageContent(messageContent) {
@@ -292,6 +291,248 @@ function logAiWarn(message, extra = {}) {
 
 function logAiError(message, extra = {}) {
   console.error('[ai-chat]', message, extra);
+}
+
+function assertMessagesContract(messages) {
+  if (!Array.isArray(messages) || !messages.length) {
+    throw new Error('AI messages must be a non-empty array');
+  }
+
+  const invalidMessage = messages.find((message) => !message || typeof message !== 'object' || !normalizeText(message.role) || message.content === undefined);
+
+  if (invalidMessage) {
+    throw new Error('AI messages contain invalid items');
+  }
+
+  if (messages.some((message) => normalizeText(message.role) === 'assistant')) {
+    throw new Error('assistant prefill is not allowed for AI requests');
+  }
+
+  if (normalizeText(messages[messages.length - 1]?.role) !== 'user') {
+    throw new Error('AI messages must end with a user message');
+  }
+}
+
+async function postGuideModelRequest({ messages, timeout }) {
+  assertMessagesContract(messages);
+
+  const aiConfig = getAiConfigState();
+
+  if (!aiConfig.baseUrl || !aiConfig.hasApiKey || !aiConfig.model) {
+    return {
+      skipped: true,
+      model: 'fallback-local'
+    };
+  }
+
+  const requestUrl = `${aiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`;
+
+  logAiInfo('calling remote model', {
+    baseUrl: aiConfig.baseUrl,
+    requestUrl,
+    model: aiConfig.model
+  });
+
+  const response = await axios.post(
+    requestUrl,
+    {
+      model: aiConfig.model,
+      temperature: 0.3,
+      response_format: { type: 'json_object' },
+      messages
+    },
+    {
+      timeout,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${env.aiApiKey}`
+      }
+    }
+  );
+
+  return {
+    skipped: false,
+    data: response.data,
+    model: response.data?.model || aiConfig.model,
+    tokenUsage: getTokenUsage(response.data?.usage)
+  };
+}
+
+function pickRelatedSpots(matchedContext) {
+  return matchedContext
+    .filter((item) => item.type === 'scenic')
+    .map((item) => item.title)
+    .slice(0, 4);
+}
+
+function pickRelatedTopics(matchedContext) {
+  const articleTitles = matchedContext
+    .filter((item) => item.type === 'article')
+    .map((item) => item.title);
+  const categoryNames = matchedContext
+    .map((item) => item.categoryName)
+    .filter(Boolean);
+  const tagNames = matchedContext
+    .flatMap((item) => item.tags || [])
+    .filter((item) => String(item).length >= 2);
+
+  return uniq([...articleTitles, ...categoryNames, ...tagNames]).slice(0, 4);
+}
+
+function buildFallbackDirectAnswer(question, matchedContext) {
+  if (!matchedContext.length) {
+    return '基于当前平台资料，暂时没有检索到足够直接的相关内容。你可以把问题换得更具体一些，例如聚焦景点、美食、非遗或红色文化中的某一类。';
+  }
+
+  const scenicTitles = pickRelatedSpots(matchedContext);
+  const topicTitles = pickRelatedTopics(matchedContext);
+
+  if (/美食|吃|小吃|餐馆|菜/.test(question)) {
+    return `如果你想从饮食角度认识赣州，可以先从${topicTitles.slice(0, 2).join('、') || '赣州在地美食'}这些内容看起，它们更能体现地方生活与客家饮食脉络。`;
+  }
+
+  if (/非遗|戏曲|传统|民俗|客家/.test(question)) {
+    return `如果你想理解赣州的非遗和地方传统，可以先从${topicTitles.slice(0, 2).join('、') || '赣州非遗与客家文化'}这一类内容入手，再去看相关景点或展示空间。`;
+  }
+
+  if (/红色|革命|长征|瑞金/.test(question)) {
+    return `如果你关注红色文化，可以先把${scenicTitles.slice(0, 2).join('、') || '相关红色地点'}和站内专题内容结合起来看，这样更容易建立历史线索。`;
+  }
+
+  if (/周末|一日|两日|行程|路线|安排|怎么逛/.test(question)) {
+    return `如果你是在问赣州怎么逛，当前资料里更适合作为起点的内容包括${scenicTitles.slice(0, 3).join('、') || '若干核心景点'}，它们更容易串成一条清楚的城市导览思路。`;
+  }
+
+  return `基于当前平台资料，这个问题可以先从${uniq([...scenicTitles, ...topicTitles]).slice(0, 3).join('、') || '赣州文旅内容'}这些线索开始理解。`;
+}
+
+function buildFallbackCulturalContext(question) {
+  if (/美食|吃|小吃|餐馆|菜/.test(question)) {
+    return '在赣州，美食不只是“吃什么”，也和客家饮食习惯、地方生活节奏以及城市记忆有关，所以更适合放在在地文化语境里理解。';
+  }
+
+  if (/非遗|戏曲|传统|民俗|客家/.test(question)) {
+    return '这类问题背后对应的是赣州的手艺传承、民俗习惯和客家文化结构，单看某一个项目往往不够，结合地方文化脉络会更容易理解。';
+  }
+
+  if (/红色|革命|长征|瑞金/.test(question)) {
+    return '这类内容不仅和具体历史地点有关，也和赣州在红色记忆中的位置有关，所以适合把地点、历史叙事和当下参观方式放在一起看。';
+  }
+
+  if (/景点|古城|历史|文化|古迹/.test(question)) {
+    return '赣州很多景点并不是孤立存在的，它们往往同时连着宋城历史、客家文化或红色记忆，理解这些线索会比单纯记住点位更有帮助。';
+  }
+
+  return '这个问题更适合从“赣州的内容线索 + 旅行语境”一起理解，先知道它属于哪类文化内容，再决定下一步去看什么、问什么。';
+}
+
+function buildNextSteps(question, matchedContext) {
+  const scenicTitle = pickRelatedSpots(matchedContext)[0];
+  const topicTitle = pickRelatedTopics(matchedContext)[0];
+  const nextSteps = [];
+
+  if (scenicTitle) {
+    nextSteps.push(`如果你想继续细化，我可以继续说明“${scenicTitle}”适合怎么逛、看点在哪。`);
+  }
+
+  if (topicTitle) {
+    nextSteps.push(`也可以继续从“${topicTitle}”这个方向往下展开，看看它和赣州其他内容怎么关联。`);
+  }
+
+  if (!/天|行程|路线|安排|怎么逛/.test(question)) {
+    nextSteps.push('如果你已经有出行天数和兴趣偏好，也可以继续让我帮你整理一条参考性的赣州导览路径。');
+  }
+
+  nextSteps.push('你还可以把问题问得更具体一些，例如某个景点的看点、某类美食的代表内容，或某段历史的关联地点。');
+
+  return uniq(nextSteps).slice(0, 3);
+}
+
+function buildRelatedContentText(relatedTopics, relatedSpots) {
+  const lines = [];
+
+  if (relatedTopics.length) {
+    lines.push(`相关主题：${relatedTopics.join('、')}`);
+  }
+
+  if (relatedSpots.length) {
+    lines.push(`相关景点/内容：${relatedSpots.join('、')}`);
+  }
+
+  if (!lines.length) {
+    lines.push('当前可以继续从景点导览、在地美食、非遗传承或红色文化中的某一类继续细化。');
+  }
+
+  return lines.join('\n');
+}
+
+function buildNextStepsText(nextSteps) {
+  if (!nextSteps.length) {
+    return '你可以继续追问某个景点、某个主题，或者告诉我你的出行天数与偏好，让我继续帮你整理导览思路。';
+  }
+
+  return nextSteps.map((item, index) => `${index + 1}. ${item}`).join('\n');
+}
+
+function buildGuideAnswerText(result) {
+  return [
+    '[直接回答]',
+    result.directAnswer,
+    '',
+    '[文化线索]',
+    result.culturalContext,
+    '',
+    '[相关内容]',
+    buildRelatedContentText(result.relatedTopics, result.relatedSpots),
+    '',
+    '[下一步探索建议]',
+    buildNextStepsText(result.nextSteps)
+  ].join('\n');
+}
+
+function buildFallbackChatResult(question, matchedContext) {
+  const relatedTopics = pickRelatedTopics(matchedContext);
+  const relatedSpots = pickRelatedSpots(matchedContext);
+  const directAnswer = buildFallbackDirectAnswer(question, matchedContext);
+  const culturalContext = buildFallbackCulturalContext(question);
+  const nextSteps = buildNextSteps(question, matchedContext);
+
+  const result = {
+    directAnswer,
+    culturalContext,
+    relatedTopics,
+    relatedSpots,
+    nextSteps
+  };
+
+  return {
+    ...result,
+    answer: buildGuideAnswerText(result),
+    modelName: 'fallback-local',
+    tokenUsage: 0
+  };
+}
+
+function normalizeChatResultStructure(rawResult, question, matchedContext, modelName) {
+  const fallbackResult = buildFallbackChatResult(question, matchedContext);
+  const relatedTopics = sanitizeStringArray(rawResult?.relatedTopics, 4, 48);
+  const relatedSpots = sanitizeStringArray(rawResult?.relatedSpots, 4, 48);
+  const nextSteps = sanitizeStringArray(rawResult?.nextSteps, 3, 96);
+
+  const result = {
+    directAnswer: shortenText(rawResult?.directAnswer, 280) || fallbackResult.directAnswer,
+    culturalContext: shortenText(rawResult?.culturalContext, 240) || fallbackResult.culturalContext,
+    relatedTopics: relatedTopics.length ? relatedTopics : fallbackResult.relatedTopics,
+    relatedSpots: relatedSpots.length ? relatedSpots : fallbackResult.relatedSpots,
+    nextSteps: nextSteps.length ? nextSteps : fallbackResult.nextSteps
+  };
+
+  return {
+    ...result,
+    answer: buildGuideAnswerText(result),
+    modelName,
+    tokenUsage: 0
+  };
 }
 
 async function recallScenicItems(terms) {
@@ -397,81 +638,50 @@ async function requestChatCompletion(question, matchedContext) {
   const messages = buildChatMessages({ question, contextText });
   const aiConfig = getAiConfigState();
 
-  if (!aiConfig.baseUrl || !aiConfig.hasApiKey || !aiConfig.model) {
-    logAiWarn('remote model skipped because AI env is incomplete', {
-      baseUrl: aiConfig.baseUrl || '(empty)',
-      model: aiConfig.model || '(empty)',
-      hasApiKey: aiConfig.hasApiKey,
-      fallback: true
-    });
-
-    return {
-      answer: buildFallbackAnswer(question, matchedContext, '当前 AI 服务尚未完成配置，以下回答基于已检索到的资料整理。'),
-      modelName: 'fallback-local',
-      tokenUsage: 0
-    };
-  }
-
   try {
-    const requestUrl = `${aiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`;
-
-    logAiInfo('calling remote model', {
-      baseUrl: aiConfig.baseUrl,
-      requestUrl,
-      model: aiConfig.model,
-      matchedCount: matchedContext.length
+    const requestResult = await postGuideModelRequest({
+      messages,
+      timeout: 30000
     });
 
-    const response = await axios.post(
-      requestUrl,
-      {
-        model: aiConfig.model,
-        temperature: 0.4,
-        messages
-      },
-      {
-        timeout: 30000,
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${env.aiApiKey}`
-        }
-      }
-    );
+    if (requestResult.skipped) {
+      logAiWarn('remote model skipped because AI env is incomplete', {
+        baseUrl: aiConfig.baseUrl || '(empty)',
+        model: aiConfig.model || '(empty)',
+        hasApiKey: aiConfig.hasApiKey,
+        fallback: true
+      });
 
-    const answer = extractMessageContent(response.data?.choices?.[0]?.message?.content);
-
-    if (!answer) {
-      throw new Error('模型返回内容为空');
+      return buildFallbackChatResult(question, matchedContext);
     }
 
+    const rawContent = extractMessageContent(requestResult.data?.choices?.[0]?.message?.content);
+    const parsed = JSON.parse(extractJsonText(rawContent));
+    const normalizedResult = normalizeChatResultStructure(parsed, question, matchedContext, requestResult.model);
+
     logAiInfo('remote model responded successfully', {
-      model: response.data?.model || aiConfig.model,
-      tokenUsage: getTokenUsage(response.data?.usage),
+      model: requestResult.model,
+      tokenUsage: requestResult.tokenUsage,
       fallback: false
     });
 
     return {
-      answer,
-      modelName: response.data?.model || aiConfig.model,
-      tokenUsage: getTokenUsage(response.data?.usage)
+      ...normalizedResult,
+      modelName: requestResult.model,
+      tokenUsage: requestResult.tokenUsage
     };
   } catch (error) {
     const reason = error.response?.data?.error?.message || error.message || '模型服务暂时不可用';
-    const upstreamStatus = error.response?.status || null;
 
     logAiError('remote model request failed, switching to fallback-local', {
       baseUrl: aiConfig.baseUrl,
       model: aiConfig.model,
-      upstreamStatus,
+      upstreamStatus: error.response?.status || null,
       message: reason,
       fallback: true
     });
 
-    return {
-      answer: buildFallbackAnswer(question, matchedContext, `模型调用未成功，已切换为资料整理模式。${reason}`),
-      modelName: 'fallback-local',
-      tokenUsage: 0
-    };
+    return buildFallbackChatResult(question, matchedContext);
   }
 }
 
@@ -510,6 +720,11 @@ export async function chatWithGanzhouAssistant(req) {
 
   return {
     answer: aiResult.answer,
+    directAnswer: aiResult.directAnswer,
+    culturalContext: aiResult.culturalContext,
+    relatedTopics: aiResult.relatedTopics,
+    relatedSpots: aiResult.relatedSpots,
+    nextSteps: aiResult.nextSteps,
     model_name: aiResult.modelName,
     matchedContext: matchedContext.map((item) => ({
       type: item.type,

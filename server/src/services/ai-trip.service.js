@@ -97,6 +97,18 @@ function uniq(items) {
   return Array.from(new Set(items.filter(Boolean)));
 }
 
+function sanitizeStringArray(value, maxItems = 4, maxLength = 80) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return uniq(
+    value
+      .map((item) => shortenText(item, maxLength))
+      .filter(Boolean)
+  ).slice(0, maxItems);
+}
+
 function sanitizeInput(payload = {}) {
   const days = Number(payload.days);
   const interests = Array.isArray(payload.interests)
@@ -445,6 +457,71 @@ function extractJsonText(rawText) {
   return normalized;
 }
 
+function assertMessagesContract(messages) {
+  if (!Array.isArray(messages) || !messages.length) {
+    throw new Error('AI messages must be a non-empty array');
+  }
+
+  const invalidMessage = messages.find((message) => !message || typeof message !== 'object' || !normalizeText(message.role) || message.content === undefined);
+
+  if (invalidMessage) {
+    throw new Error('AI messages contain invalid items');
+  }
+
+  if (messages.some((message) => normalizeText(message.role) === 'assistant')) {
+    throw new Error('assistant prefill is not allowed for AI requests');
+  }
+
+  if (normalizeText(messages[messages.length - 1]?.role) !== 'user') {
+    throw new Error('AI messages must end with a user message');
+  }
+}
+
+async function postGuideModelRequest({ messages, timeout }) {
+  assertMessagesContract(messages);
+
+  const aiConfig = getAiConfigState();
+
+  if (!aiConfig.baseUrl || !aiConfig.hasApiKey || !aiConfig.model) {
+    return {
+      skipped: true,
+      model: 'fallback-local'
+    };
+  }
+
+  const requestUrl = `${aiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`;
+
+  logAiInfo('calling remote trip model', {
+    baseUrl: aiConfig.baseUrl,
+    requestUrl,
+    model: aiConfig.model
+  });
+
+  const response = await axios.post(
+    requestUrl,
+    {
+      model: aiConfig.model,
+      temperature: 0.3,
+      response_format: { type: 'json_object' },
+      messages
+    },
+    {
+      timeout,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${env.aiApiKey}`
+      }
+    }
+  );
+
+  return {
+    skipped: false,
+    data: response.data,
+    model: response.data?.model || aiConfig.model,
+    tokenUsage: getTokenUsage(response.data?.usage)
+  };
+}
+
 function inferItemType(name, matchedContext) {
   const normalized = normalizeText(name).toLowerCase();
 
@@ -486,95 +563,47 @@ function normalizeTimeSlot(value, index, pace) {
 
 function buildGenericTravelTips(input) {
   const tips = [
-    '本行程基于站内旅游文化资料生成，不包含实时天气、营业时间和交通班次。',
-    '出发前建议再次确认景点开放情况与交通安排。'
+    '本行程基于站内旅游文化资料整理，不包含实时天气、开放时间和交通班次。',
+    '出发前建议再次确认景点开放情况、交通衔接和当日体力安排。'
   ];
 
   if (input.transport === 'public_transport') {
-    tips.push('本方案已尽量控制公共交通出行跨度，但实际衔接仍建议提前确认。');
+    tips.push('若以公共交通出行为主，建议优先保留同一区域的核心点位，减少临时折返。');
   } else {
-    tips.push('自驾出行可提升串联效率，但山地路段和景区停车情况建议提前了解。');
+    tips.push('若以自驾为主，可适度放宽点位跨度，但仍建议提前确认停车与山地路况。');
   }
 
   if (input.pace === 'relaxed') {
-    tips.push('轻松节奏更适合少量重点点位和在地体验，不建议临时加太多站。');
+    tips.push('轻松节奏更适合少量重点点位和在地停留，不建议临时增加过多站点。');
   } else if (input.pace === 'compact') {
-    tips.push('紧凑节奏会安排更密集的内容，建议预留机动时间。');
+    tips.push('紧凑节奏内容会更密集，建议预留机动时间，应对临时排队或交通变化。');
   }
 
-  return uniq(tips).slice(0, 4);
+  return uniq(tips).slice(0, 5);
 }
 
-function normalizeResultStructure(rawResult, input, matchedContext, modelName) {
-  if (!rawResult || typeof rawResult !== 'object' || Array.isArray(rawResult)) {
-    throw new Error('trip plan json is invalid');
-  }
+function getInterestWeight(item, input) {
+  const combinedText = [
+    item.title,
+    item.summary,
+    item.categoryName,
+    item.region,
+    ...(item.tags || [])
+  ]
+    .join(' ')
+    .toLowerCase();
 
-  const summary = shortenText(rawResult.summary, 220);
+  let score = 0;
 
-  if (!summary) {
-    throw new Error('trip plan summary is empty');
-  }
+  input.interests.forEach((interest) => {
+    const terms = INTEREST_TERMS[interest] || [];
 
-  const days = Array.isArray(rawResult.days)
-    ? rawResult.days
-        .slice(0, input.days)
-        .map((day, dayIndex) => {
-          const rawItems = Array.isArray(day?.items) ? day.items : [];
-          const items = rawItems
-            .slice(0, SLOT_CONFIG[input.pace].length)
-            .map((item, itemIndex) => {
-              const name = normalizeText(item?.name);
-              const reason = normalizeText(item?.reason);
-              const tips = normalizeText(item?.tips);
+    if (terms.some((term) => combinedText.includes(String(term).toLowerCase()))) {
+      score += 16;
+    }
+  });
 
-              if (!name || !reason) {
-                return null;
-              }
-
-              return {
-                timeSlot: normalizeTimeSlot(item?.timeSlot, itemIndex, input.pace),
-                name,
-                type: ['scenic', 'article_or_theme'].includes(item?.type)
-                  ? item.type
-                  : inferItemType(name, matchedContext),
-                reason: shortenText(reason, 180),
-                tips: shortenText(tips || '建议结合当天时间与体力灵活调整。', 120)
-              };
-            })
-            .filter(Boolean);
-
-          return {
-            dayIndex: Number(day?.dayIndex) > 0 ? Number(day.dayIndex) : dayIndex + 1,
-            title: normalizeText(day?.title) || `第${dayIndex + 1}天行程建议`,
-            items
-          };
-        })
-        .filter((day) => day.items.length)
-    : [];
-
-  if (!days.length) {
-    throw new Error('trip plan days is empty');
-  }
-
-  const travelTips = Array.isArray(rawResult.travelTips)
-    ? rawResult.travelTips
-        .map((item) => shortenText(item, 120))
-        .filter(Boolean)
-        .slice(0, 5)
-    : [];
-
-  return {
-    summary,
-    days,
-    travelTips: travelTips.length ? travelTips : buildGenericTravelTips(input),
-    matchedContext: matchedContext.map((item) => ({
-      type: item.type === 'scenic' ? 'scenic' : 'article_or_theme',
-      id: item.id,
-      title: item.title
-    })),
-    model_name: modelName
-  };
+  return score;
 }
 
 function getRegionWeight(item, input) {
@@ -595,29 +624,6 @@ function getRegionWeight(item, input) {
   }
 
   return 2;
-}
-
-function getInterestWeight(item, input) {
-  const combinedText = [
-    item.title,
-    item.summary,
-    item.categoryName,
-    item.region,
-    ...(item.tags || [])
-  ]
-    .join(' ')
-    .toLowerCase();
-
-  let score = 0;
-
-  input.interests.forEach((interest) => {
-    const terms = INTEREST_TERMS[interest] || [];
-    if (terms.some((term) => combinedText.includes(String(term).toLowerCase()))) {
-      score += 16;
-    }
-  });
-
-  return score;
 }
 
 function getPaceWeight(item, input) {
@@ -643,8 +649,106 @@ function sortMatchedContext(input, matchedContext) {
   });
 }
 
+function buildInterestLabels(input) {
+  return input.interests.map((item) => INTEREST_LABELS[item] || item);
+}
+
+function buildRelatedTopics(input, matchedContext) {
+  const contextTopics = matchedContext
+    .filter((item) => item.type !== 'scenic')
+    .map((item) => item.title);
+  const categoryNames = matchedContext.map((item) => item.categoryName).filter(Boolean);
+  const interestLabels = buildInterestLabels(input);
+
+  return uniq([...contextTopics, ...categoryNames, ...interestLabels]).slice(0, 4);
+}
+
+function buildRelatedSpots(matchedContext) {
+  return matchedContext
+    .filter((item) => item.type === 'scenic')
+    .map((item) => item.title)
+    .slice(0, 5);
+}
+
+function buildAdjustmentSuggestions(input) {
+  const suggestions = [
+    '这是一份参考性导览路径，出发前建议结合开放情况、交通衔接和天气变化做微调。'
+  ];
+
+  if (input.transport === 'public_transport') {
+    suggestions.push('如果当天换乘较多，可优先保留同一区域的核心点位，把跨区内容留到下一次展开。');
+  } else {
+    suggestions.push('如果自驾跨度较大，可按区域把内容拆成上下午两段，减少连续奔波。');
+  }
+
+  if (input.notes) {
+    suggestions.push('如果你还想优先照顾长辈、亲子或拍照节奏，可以继续补充需求，我会在同一主题下帮你收紧路径。');
+  } else {
+    suggestions.push('如果你愿意补充同行人、停留时间或更想深入的主题，这条路径还可以继续细化。');
+  }
+
+  return uniq(suggestions).slice(0, 4);
+}
+
+function buildRouteHighlights(input, matchedContext) {
+  const scenicTitles = buildRelatedSpots(matchedContext);
+  const topicTitles = buildRelatedTopics(input, matchedContext);
+  const highlights = [];
+
+  highlights.push(`这条路径以${buildInterestLabels(input).join('、')}为主线，更强调“理解内容 + 形成游览思路”，而不是单纯赶点。`);
+
+  if (scenicTitles.length) {
+    highlights.push(`可重点串联${scenicTitles.slice(0, 3).join('、')}等内容，让景点浏览和城市文化线索放在一起理解。`);
+  }
+
+  if (topicTitles.length) {
+    highlights.push(`路径会把${topicTitles.slice(0, 2).join('、')}这类主题内容自然接入，不只停留在点位罗列。`);
+  }
+
+  if (input.transport === 'public_transport') {
+    highlights.push('整体点位跨度会相对收敛，更适合作为公共交通条件下的参考导览路径。');
+  } else {
+    highlights.push('在自驾条件下可适度放宽串联范围，更方便把不同区域的主题内容放进同一条路径。');
+  }
+
+  return uniq(highlights).slice(0, 4);
+}
+
+function buildTripGuideMetadata(input, matchedContext) {
+  const interestLabels = buildInterestLabels(input);
+  const scenicTitles = buildRelatedSpots(matchedContext);
+  const relatedTopics = buildRelatedTopics(input, matchedContext);
+  const routeHighlights = buildRouteHighlights(input, matchedContext);
+  const adjustmentSuggestions = buildAdjustmentSuggestions(input);
+  const paceText = PACE_LABELS[input.pace] || input.pace;
+  const transportText = TRANSPORT_LABELS[input.transport] || input.transport;
+
+  const pathPositioning = `这是一条以${interestLabels.join('、')}为主线的赣州参考性导览路径，重点帮助你在${input.days}天内把景点浏览、主题内容和旅行理解串起来。`;
+  const suitableFor = `更适合${input.days}天、${paceText}节奏、${transportText}出行的游客；如果你想先形成清楚的游览思路，再按当天情况微调，这类安排会更合适。`;
+  const summaryParts = [
+    `这是一条围绕${interestLabels.join('、')}展开的赣州${input.days}天参考导览路径，整体节奏偏${paceText}。`
+  ];
+
+  if (scenicTitles.length) {
+    summaryParts.push(`它会优先串联${scenicTitles.slice(0, 3).join('、')}这类更容易建立线索的内容。`);
+  } else {
+    summaryParts.push('它更适合作为理解赣州文旅主题与安排下一步浏览的起点。');
+  }
+
+  return {
+    summary: summaryParts.join(''),
+    pathPositioning,
+    suitableFor,
+    routeHighlights,
+    relatedTopics,
+    relatedSpots: scenicTitles,
+    adjustmentSuggestions,
+    travelTips: buildGenericTravelTips(input)
+  };
+}
+
 function buildDayTitle(dayItems, index, input) {
-  const labels = input.interests.map((item) => INTEREST_LABELS[item]).filter(Boolean);
+  const labels = buildInterestLabels(input);
   const mainLabel = labels[index % labels.length] || '赣州文化体验';
   const firstItem = dayItems[0]?.name || '在地行程';
   return `第${index + 1}天：${mainLabel}与${firstItem}`;
@@ -653,13 +757,13 @@ function buildDayTitle(dayItems, index, input) {
 function buildItemReason(item, input) {
   const interestLabel = INTEREST_LABELS[input.interests[0]] || '赣州文化体验';
   const regionText = item.region ? `，位于${item.region}` : '';
-  return shortenText(`${item.title}${regionText}和你的“${interestLabel}”偏好较匹配，适合放进这次${input.days}天行程中。${item.summary || ''}`, 180);
+  return shortenText(`${item.title}${regionText}和你的“${interestLabel}”偏好较匹配，适合放进这次${input.days}天的导览路径中。${item.summary || ''}`, 180);
 }
 
 function buildItemTip(item, input) {
   const routeHint = input.transport === 'public_transport'
-    ? '建议尽量与周边点位串联，减少往返。'
-    : '自驾出行可适度放宽串联范围，但建议提前确认路况。';
+    ? '建议尽量和周边点位顺路安排，减少临时折返。'
+    : '自驾出行可适度放宽范围，但仍建议提前确认路况。';
 
   if (item.type === 'scenic') {
     return shortenText(`建议优先安排在${SLOT_LABELS.morning}或${SLOT_LABELS.afternoon}体验。${routeHint}`, 120);
@@ -668,7 +772,80 @@ function buildItemTip(item, input) {
   return shortenText(`适合作为当天的文化补充或餐食体验内容。${routeHint}`, 120);
 }
 
-function buildFallbackTripPlan(input, matchedContext, reason = '') {
+function normalizeResultStructure(rawResult, input, matchedContext, modelName) {
+  if (!rawResult || typeof rawResult !== 'object' || Array.isArray(rawResult)) {
+    throw new Error('trip plan json is invalid');
+  }
+
+  const guideMetadata = buildTripGuideMetadata(input, matchedContext);
+  const slots = SLOT_CONFIG[input.pace] || SLOT_CONFIG.normal;
+  const days = Array.isArray(rawResult.days)
+    ? rawResult.days
+        .slice(0, input.days)
+        .map((day, dayIndex) => {
+          const rawItems = Array.isArray(day?.items) ? day.items : [];
+          const items = rawItems
+            .slice(0, slots.length)
+            .map((item, itemIndex) => {
+              const name = normalizeText(item?.name);
+              const reason = normalizeText(item?.reason);
+              const tips = normalizeText(item?.tips);
+
+              if (!name || !reason) {
+                return null;
+              }
+
+              return {
+                timeSlot: normalizeTimeSlot(item?.timeSlot, itemIndex, input.pace),
+                name,
+                type: ['scenic', 'article_or_theme'].includes(item?.type)
+                  ? item.type
+                  : inferItemType(name, matchedContext),
+                reason: shortenText(reason, 180),
+                tips: shortenText(tips || '建议结合当天时间、交通与体力灵活调整。', 120)
+              };
+            })
+            .filter(Boolean);
+
+          return {
+            dayIndex: Number(day?.dayIndex) > 0 ? Number(day.dayIndex) : dayIndex + 1,
+            title: normalizeText(day?.title) || `第${dayIndex + 1}天行程建议`,
+            items
+          };
+        })
+        .filter((day) => day.items.length)
+    : [];
+
+  if (!days.length) {
+    throw new Error('trip plan days is empty');
+  }
+
+  const travelTips = sanitizeStringArray(rawResult.travelTips, 5, 120);
+  const routeHighlights = sanitizeStringArray(rawResult.routeHighlights, 4, 100);
+  const relatedTopics = sanitizeStringArray(rawResult.relatedTopics, 4, 64);
+  const relatedSpots = sanitizeStringArray(rawResult.relatedSpots, 5, 64);
+  const adjustmentSuggestions = sanitizeStringArray(rawResult.adjustmentSuggestions, 4, 120);
+
+  return {
+    summary: shortenText(rawResult.summary, 220) || guideMetadata.summary,
+    pathPositioning: shortenText(rawResult.pathPositioning, 220) || guideMetadata.pathPositioning,
+    suitableFor: shortenText(rawResult.suitableFor, 220) || guideMetadata.suitableFor,
+    routeHighlights: routeHighlights.length ? routeHighlights : guideMetadata.routeHighlights,
+    relatedTopics: relatedTopics.length ? relatedTopics : guideMetadata.relatedTopics,
+    relatedSpots: relatedSpots.length ? relatedSpots : guideMetadata.relatedSpots,
+    adjustmentSuggestions: adjustmentSuggestions.length ? adjustmentSuggestions : guideMetadata.adjustmentSuggestions,
+    days,
+    travelTips: travelTips.length ? travelTips : guideMetadata.travelTips,
+    matchedContext: matchedContext.map((item) => ({
+      type: item.type === 'scenic' ? 'scenic' : 'article_or_theme',
+      id: item.id,
+      title: item.title
+    })),
+    model_name: modelName
+  };
+}
+
+function buildFallbackTripPlan(input, matchedContext) {
   const sortedItems = sortMatchedContext(input, matchedContext);
   const slots = SLOT_CONFIG[input.pace] || SLOT_CONFIG.normal;
   const maxItemsPerDay = input.transport === 'self_drive'
@@ -699,20 +876,11 @@ function buildFallbackTripPlan(input, matchedContext, reason = '') {
     });
   }
 
-  const interestsText = input.interests.map((item) => INTEREST_LABELS[item] || item).join('、');
-  const summaryParts = [
-    `这是一份${input.days}天的赣州行程建议，重点围绕${interestsText}展开。`,
-    `整体节奏偏${PACE_LABELS[input.pace] || input.pace}，并按${TRANSPORT_LABELS[input.transport] || input.transport}方式控制串联强度。`
-  ];
-
-  if (reason) {
-    summaryParts.push(`当前结果使用资料整理模式生成，原因是：${reason}`);
-  }
+  const guideMetadata = buildTripGuideMetadata(input, matchedContext);
 
   return {
-    summary: summaryParts.join(''),
+    ...guideMetadata,
     days,
-    travelTips: buildGenericTravelTips(input),
     matchedContext: matchedContext.map((item) => ({
       type: item.type === 'scenic' ? 'scenic' : 'article_or_theme',
       id: item.id,
@@ -727,75 +895,53 @@ async function requestTripPlanCompletion(input, matchedContext) {
   const messages = buildTripPlanMessages({ input, contextText });
   const aiConfig = getAiConfigState();
 
-  if (!aiConfig.baseUrl || !aiConfig.hasApiKey || !aiConfig.model) {
-    logAiWarn('remote model skipped because AI env is incomplete', {
-      baseUrl: aiConfig.baseUrl || '(empty)',
-      model: aiConfig.model || '(empty)',
-      hasApiKey: aiConfig.hasApiKey,
-      fallback: true
-    });
-
-    return {
-      result: buildFallbackTripPlan(input, matchedContext, '当前 AI 行程服务尚未完成配置'),
-      tokenUsage: 0
-    };
-  }
-
   try {
-    const requestUrl = `${aiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`;
-
-    logAiInfo('calling remote trip model', {
-      baseUrl: aiConfig.baseUrl,
-      requestUrl,
-      model: aiConfig.model,
-      matchedCount: matchedContext.length
+    const requestResult = await postGuideModelRequest({
+      messages,
+      timeout: 40000
     });
 
-    const response = await axios.post(
-      requestUrl,
-      {
-        model: aiConfig.model,
-        temperature: 0.4,
-        response_format: { type: 'json_object' },
-        messages
-      },
-      {
-        timeout: 40000,
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${env.aiApiKey}`
-        }
-      }
-    );
+    if (requestResult.skipped) {
+      logAiWarn('remote model skipped because AI env is incomplete', {
+        baseUrl: aiConfig.baseUrl || '(empty)',
+        model: aiConfig.model || '(empty)',
+        hasApiKey: aiConfig.hasApiKey,
+        fallback: true
+      });
 
-    const content = extractMessageContent(response.data?.choices?.[0]?.message?.content);
+      return {
+        result: buildFallbackTripPlan(input, matchedContext),
+        tokenUsage: 0
+      };
+    }
+
+    const content = extractMessageContent(requestResult.data?.choices?.[0]?.message?.content);
     const parsed = JSON.parse(extractJsonText(content));
-    const normalizedResult = normalizeResultStructure(parsed, input, matchedContext, response.data?.model || aiConfig.model);
+    const normalizedResult = normalizeResultStructure(parsed, input, matchedContext, requestResult.model);
 
     logAiInfo('remote trip model responded successfully', {
-      model: response.data?.model || aiConfig.model,
-      tokenUsage: getTokenUsage(response.data?.usage),
+      model: requestResult.model,
+      tokenUsage: requestResult.tokenUsage,
       fallback: false
     });
 
     return {
       result: normalizedResult,
-      tokenUsage: getTokenUsage(response.data?.usage)
+      tokenUsage: requestResult.tokenUsage
     };
   } catch (error) {
     const reason = error.response?.data?.error?.message || error.message || 'trip model request failed';
-    const upstreamStatus = error.response?.status || null;
 
     logAiError('remote trip model request failed, switching to fallback-local', {
       baseUrl: aiConfig.baseUrl,
       model: aiConfig.model,
-      upstreamStatus,
+      upstreamStatus: error.response?.status || null,
       message: reason,
       fallback: true
     });
 
     return {
-      result: buildFallbackTripPlan(input, matchedContext, `模型调用失败，已切换为资料整理模式。${reason}`),
+      result: buildFallbackTripPlan(input, matchedContext),
       tokenUsage: 0
     };
   }
