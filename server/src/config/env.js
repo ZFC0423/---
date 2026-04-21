@@ -20,5 +20,6 @@ export const env = {
   uploadUrlPrefix: process.env.UPLOAD_URL_PREFIX || '/uploads',
   aiBaseUrl: process.env.AI_BASE_URL || '',
   aiApiKey: process.env.AI_API_KEY || '',
-  aiModel: process.env.AI_MODEL || ''
+  aiModel: process.env.AI_MODEL || '',
+  aiGuideProvider: process.env.AI_GUIDE_PROVIDER || 'mock'
 };

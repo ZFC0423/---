@@ -1,13 +1,87 @@
 import express from 'express';
 import { body } from 'express-validator';
 
-import { chat, recommendQuestions, tripPlan } from '../../controllers/front/ai.controller.js';
+import { chat, intent, knowledge, recommendQuestions, tripPlan } from '../../controllers/front/ai.controller.js';
 import { validateRequest } from '../../middlewares/validate-request.js';
 
 const router = express.Router();
 const allowedInterests = ['natural', 'red_culture', 'hakka_culture', 'heritage', 'food', 'family', 'photography'];
 
+function optionalNullableStringArray(field) {
+  return body(field)
+    .optional({ nullable: true })
+    .custom((value) => value === null || (Array.isArray(value) && value.every((item) => typeof item === 'string')))
+    .withMessage(`${field} must be a string array or null`);
+}
+
 router.get('/recommend-questions', recommendQuestions);
+router.post(
+  '/intent',
+  [
+    body('input')
+      .isString()
+      .withMessage('input must be a string')
+      .trim()
+      .notEmpty()
+      .withMessage('input is required')
+      .isLength({ max: 500 })
+      .withMessage('input is too long'),
+    body('priorState')
+      .optional({ nullable: true })
+      .custom((value) => value === null || (typeof value === 'object' && !Array.isArray(value)))
+      .withMessage('priorState must be an object or null'),
+    validateRequest
+  ],
+  intent
+);
+router.post(
+  '/knowledge',
+  [
+    body('routerResult')
+      .custom((value) => value && typeof value === 'object' && !Array.isArray(value))
+      .withMessage('routerResult must be an object'),
+    body('routerResult.task_type')
+      .equals('guide_understand')
+      .withMessage('routerResult.task_type must be guide_understand'),
+    body('routerResult.task_confidence')
+      .isFloat({ min: 0, max: 1 })
+      .withMessage('routerResult.task_confidence must be a number between 0 and 1'),
+    body('routerResult.clarification_needed')
+      .custom((value) => value === false)
+      .withMessage('routerResult.clarification_needed must be false'),
+    body('routerResult.clarification_reason')
+      .custom((value) => value === null)
+      .withMessage('routerResult.clarification_reason must be null'),
+    body('routerResult.missing_required_fields')
+      .isArray({ max: 0 })
+      .withMessage('routerResult.missing_required_fields must be an empty array'),
+    body('routerResult.clarification_questions')
+      .isArray({ max: 0 })
+      .withMessage('routerResult.clarification_questions must be an empty array'),
+    body('routerResult.next_agent')
+      .equals('ai_chat')
+      .withMessage('routerResult.next_agent must be ai_chat'),
+    body('routerResult.constraints')
+      .custom((value) => value && typeof value === 'object' && !Array.isArray(value))
+      .withMessage('routerResult.constraints must be an object'),
+    body('routerResult.constraints.user_query')
+      .isString()
+      .withMessage('routerResult.constraints.user_query must be a string')
+      .trim()
+      .notEmpty()
+      .withMessage('routerResult.constraints.user_query is required')
+      .isLength({ max: 500 })
+      .withMessage('routerResult.constraints.user_query is too long'),
+    optionalNullableStringArray('routerResult.constraints.subject_entities'),
+    optionalNullableStringArray('routerResult.constraints.theme_preferences'),
+    optionalNullableStringArray('routerResult.constraints.region_hints'),
+    optionalNullableStringArray('routerResult.constraints.scenic_hints'),
+    optionalNullableStringArray('routerResult.constraints.hard_avoidances'),
+    optionalNullableStringArray('routerResult.constraints.companions'),
+    validateRequest
+  ],
+  knowledge
+);
 router.post(
   '/chat',
   [
