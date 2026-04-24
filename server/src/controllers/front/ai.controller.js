@@ -6,6 +6,7 @@ import { generateGanzhouTripPlan } from '../../services/ai-trip.service.js';
 import { routeIntent } from '../../services/ai/intent-router/index.js';
 import { runKnowledgeGuideAgent } from '../../services/ai/knowledge-agent/index.js';
 import { generateRoutePlan, generateRoutePlanNarrative, reviseRoutePlan } from '../../services/ai/route-planner-agent/index.js';
+import { runDecisionDiscoveryAgent } from '../../services/ai/decision-discovery-agent/index.js';
 
 function shouldExposeIntentMeta(req) {
   if (process.env.NODE_ENV === 'production') {
@@ -206,6 +207,17 @@ export async function knowledge(req, res, next) {
       requestMeta: {
         ip: req.ip || req.socket?.remoteAddress || ''
       }
+    });
+    sendSuccess(res, result);
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function discovery(req, res, next) {
+  try {
+    const result = await runDecisionDiscoveryAgent(req.body || {}, {
+      requestMeta: buildRequestMeta(req)
     });
     sendSuccess(res, result);
   } catch (error) {
