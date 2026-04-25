@@ -66,6 +66,10 @@ router.post(
       .optional({ nullable: true })
       .custom((value) => value === null || (typeof value === 'object' && !Array.isArray(value)))
       .withMessage('action must be an object or null'),
+    body('priorState')
+      .optional({ nullable: true })
+      .custom((value) => value === null || (typeof value === 'object' && !Array.isArray(value)))
+      .withMessage('priorState must be an object or null'),
     validateRequest
   ],
   discoveryQuery

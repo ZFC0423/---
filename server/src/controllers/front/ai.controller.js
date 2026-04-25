@@ -227,38 +227,45 @@ export async function discovery(req, res, next) {
   }
 }
 
-export async function discoveryQuery(req, res, next) {
-  try {
-    const body = req.body || {};
-    const routerResult = await routeIntent({
-      input: body.user_query,
-      priorState: null
-    });
+export function createDiscoveryQueryHandler({
+  routeIntentService = routeIntent,
+  runDecisionDiscoveryAgentService = runDecisionDiscoveryAgent
+} = {}) {
+  return async function discoveryQueryHandler(req, res, next) {
+    try {
+      const body = req.body || {};
+      const routerResult = await routeIntentService({
+        input: body.user_query,
+        priorState: body.priorState ?? null
+      });
 
-    if (routerResult.clarification_needed) {
-      sendSuccess(res, stripIntentMeta(routerResult));
-      return;
+      if (routerResult.clarification_needed || routerResult.next_agent === 'safe_clarify') {
+        sendSuccess(res, stripIntentMeta(routerResult));
+        return;
+      }
+
+      if (routerResult.next_agent !== 'decision_discovery') {
+        sendSuccess(res, createInvalidOutput({
+          taskType: 'discover_options',
+          reasonCode: 'unsupported_next_agent'
+        }));
+        return;
+      }
+
+      const discoveryPayload = buildDiscoveryPayloadFromRouterResult(routerResult, {
+        previous_public_result: body.previous_public_result,
+        decision_context: body.decision_context,
+        action: body.action
+      });
+      const result = await runDecisionDiscoveryAgentService(discoveryPayload, {
+        requestMeta: buildRequestMeta(req)
+      });
+
+      sendSuccess(res, result);
+    } catch (error) {
+      next(error);
     }
-
-    if (routerResult.next_agent !== 'decision_discovery') {
-      sendSuccess(res, createInvalidOutput({
-        taskType: 'discover_options',
-        reasonCode: 'unsupported_next_agent'
-      }));
-      return;
-    }
-
-    const discoveryPayload = buildDiscoveryPayloadFromRouterResult(routerResult, {
-      previous_public_result: body.previous_public_result,
-      decision_context: body.decision_context,
-      action: body.action
-    });
-    const result = await runDecisionDiscoveryAgent(discoveryPayload, {
-      requestMeta: buildRequestMeta(req)
-    });
-
-    sendSuccess(res, result);
-  } catch (error) {
-    next(error);
-  }
+  };
 }
+
+export const discoveryQuery = createDiscoveryQueryHandler();

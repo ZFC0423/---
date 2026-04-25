@@ -17,6 +17,7 @@ const navigationEntries = [
 ];
 
 const secondaryEntries = [
+  { label: '发现决策室', path: '/ai-discovery', desc: '先比较候选，再把选择交给路线生成' },
   { label: '路线工作室', path: '/ai-trip', desc: '把兴趣、天数与节奏编排成路线长卷' },
   { label: '策展附记', path: '/about', desc: '解释这部长卷为什么这样编排' }
 ];

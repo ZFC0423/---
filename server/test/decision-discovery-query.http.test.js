@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 
 import app from '../src/app.js';
+import { createDiscoveryQueryHandler } from '../src/controllers/front/ai.controller.js';
 
 function makeRequest({ port, path = '/api/front/ai/discovery/query', body }) {
   return new Promise((resolve, reject) => {
@@ -133,4 +134,116 @@ test('direct discovery endpoint remains available after discovery query integrat
     assert.equal(response.json.data.task_type, 'discover_options');
     assert.ok(Array.isArray(response.json.data.ranked_options));
   });
+});
+
+test('discovery query handler passes priorState to Intent Router service', async () => {
+  const received = [];
+  const priorState = {
+    task_type: 'plan_route',
+    task_confidence: 0.91,
+    constraints: {
+      time_budget: { days: 3 },
+      travel_mode: 'public_transport',
+      pace_preference: 'relaxed'
+    }
+  };
+  const handler = createDiscoveryQueryHandler({
+    routeIntentService: async (payload) => {
+      received.push(payload);
+      return {
+        task_type: 'discover_options',
+        task_confidence: 0.88,
+        constraints: {
+          user_query: payload.input,
+          time_budget: { days: 3 },
+          travel_mode: 'public_transport',
+          pace_preference: 'relaxed'
+        },
+        clarification_needed: false,
+        clarification_reason: null,
+        missing_required_fields: [],
+        clarification_questions: [],
+        next_agent: 'decision_discovery'
+      };
+    },
+    runDecisionDiscoveryAgentService: async () => ({
+      task_type: 'discover_options',
+      result_status: 'empty',
+      ranked_options: [],
+      comparison: null,
+      next_actions: [],
+      warnings: [],
+      decision_context: {
+        context_version: 1,
+        fingerprint: 'sha256:test',
+        continuation: {}
+      }
+    })
+  });
+  let jsonBody = null;
+  const req = {
+    body: {
+      user_query: '3天',
+      priorState
+    },
+    headers: {},
+    socket: {}
+  };
+  const res = {
+    json(body) {
+      jsonBody = body;
+    }
+  };
+
+  await handler(req, res, assert.fail);
+
+  assert.equal(received.length, 1);
+  assert.deepEqual(received[0], {
+    input: '3天',
+    priorState
+  });
+  assert.equal(jsonBody.code, 200);
+});
+
+test('discovery query handler treats safe_clarify next_agent as Router clarify even when flag is false', async () => {
+  const handler = createDiscoveryQueryHandler({
+    routeIntentService: async () => ({
+      task_type: 'discover_options',
+      task_confidence: 0.81,
+      constraints: {
+        user_query: 'help me choose',
+        time_budget: null,
+        travel_mode: null,
+        pace_preference: null
+      },
+      clarification_needed: false,
+      clarification_reason: 'missing_required_fields',
+      missing_required_fields: ['time_budget'],
+      clarification_questions: ['How many days do you plan to travel?'],
+      next_agent: 'safe_clarify'
+    }),
+    runDecisionDiscoveryAgentService: async () => {
+      assert.fail('Discovery agent should not run for Router safe_clarify output');
+    }
+  });
+  let jsonBody = null;
+  const req = {
+    body: {
+      user_query: 'help me choose'
+    },
+    headers: {},
+    socket: {}
+  };
+  const res = {
+    json(body) {
+      jsonBody = body;
+    }
+  };
+
+  await handler(req, res, assert.fail);
+
+  assert.equal(jsonBody.code, 200);
+  assert.equal(jsonBody.data.next_agent, 'safe_clarify');
+  assert.equal(jsonBody.data.clarification_needed, false);
+  assert.equal(Object.hasOwn(jsonBody.data, 'ranked_options'), false);
 });

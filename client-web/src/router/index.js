@@ -131,6 +131,17 @@ const routes = [
     }
   },
   {
+    path: '/ai-discovery',
+    name: 'ai-discovery',
+    component: () => import('../views/AiDiscoveryView.vue'),
+    meta: {
+      shell: 'decision-room',
+      shellTone: 'paper',
+      shellLabel: 'Decision Room',
+      chapterTitle: '发现决策室'
+    }
+  },
+  {
     path: '/about',
     name: 'about',
     component: () => import('../views/AboutView.vue'),
